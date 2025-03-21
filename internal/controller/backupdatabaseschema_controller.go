@@ -18,11 +18,18 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backupv1 "github.com/cyse7125-sp25-team03/db-backup-operator/api/v1"
 )
@@ -47,11 +54,141 @@ type BackupDatabaseSchemaReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.2/pkg/reconcile
 func (r *BackupDatabaseSchemaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	log := log.FromContext(ctx)
+	log.Info("Reconciling BackupDatabaseSchema", "name", req.NamespacedName)
 
-	// TODO(user): your logic here
+	backup := &backupv1.BackupDatabaseSchema{}
+	if err := r.Get(ctx, req.NamespacedName, backup); err != nil {
+		if errors.IsNotFound(err) {
+			return reconcile.Result{}, nil
+		}
+		log.Error(err, "Failed to fetch BackupDatabaseSchema")
+		return ctrl.Result{}, err
+	}
 
-	return ctrl.Result{}, nil
+	if backup.Spec.BackupJobNamespace == "" {
+		log.Info("Backup job namespace is not defined")
+		return ctrl.Result{}, nil
+	}
+
+	job := &batchv1.Job{}
+	err := r.Get(ctx, client.ObjectKey{Name: "backup-database-schema-job", Namespace: backup.Spec.BackupJobNamespace}, job)
+	if err == nil {
+		// Job exists, check its status
+		if job.Status.Active > 0 {
+			log.Info("Backup job is still running, skipping job creation")
+			return ctrl.Result{}, nil
+		} else if job.Status.Succeeded > 0 {
+			log.Info("Backup job completed successfully, deleting it to allow a new one")
+			backup.Status.Status = "Completed"
+		} else if job.Status.Failed > 0 {
+			log.Info("Backup job failed, deleting it to retry")
+			backup.Status.Status = "Failed"
+		}
+		// Update the status before deleting the job
+		log.Info("Updating BackupDatabaseSchema status")
+		if err := r.Status().Update(ctx, backup); err != nil {
+			log.Error(err, "Failed to update BackupDatabaseSchema status")
+			return ctrl.Result{}, err
+		}
+
+	} else if !errors.IsNotFound(err) {
+		// Unexpected error fetching the job
+		log.Error(err, "Failed to check for existing job")
+		return ctrl.Result{}, err
+	} else {
+		// Generate timestamped backup file name
+		timestamp := time.Now().UTC().Format("20060102-150405")
+		backupFileName := fmt.Sprintf("backup-%s.sql", timestamp)
+		log.Info("Creating new backup job")
+		newJob := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "backup-database-schema-job",
+				Namespace: backup.Spec.BackupJobNamespace,
+				Labels:    map[string]string{"backup-database": "true"},
+			},
+			Spec: batchv1.JobSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						ServiceAccountName: backup.Spec.KubeServiceAccount,
+						Containers: []corev1.Container{
+							{
+								Name:  "pg-dump",
+								Image: "roarceus/postgres-gcloud:0.0.",
+								Command: []string{
+									"sh", "-c",
+									`set -e
+																
+									echo "checking gsutil version..."
+									gsutil --version
+
+									echo "Starting database backup..."
+									BACKUP_FILE="/tmp/backup.sql"
+									PGPASSWORD=$DB_PASSWORD pg_dump -h $DB_HOST -U $DB_USER -p $DB_PORT -d $DB_NAME -n $DB_SCHEMA > $BACKUP_FILE
+
+									if [ $? -eq 0 ]; then
+										echo "Backup successful! Uploading to GCS..."
+										GCS_PATH="gs://$GCS_BUCKET/backups/backup-$(date +%Y%m%d-%H%M%S).sql"
+										gsutil cp $BACKUP_FILE $GCS_PATH
+										
+										if [ $? -eq 0 ]; then
+											echo "Upload successful! Backup saved at: $GCS_PATH"
+										else
+											echo "ERROR: Upload to GCS failed!" >&2
+											exit 1
+										fi
+									else
+										echo "ERROR: pg_dump failed!" >&2
+										exit 1
+									fi
+								`},
+								Env: []corev1.EnvVar{
+									{Name: "DB_HOST", Value: backup.Spec.DbHost},
+									{Name: "DB_USER", Value: backup.Spec.DbUser},
+									{Name: "DB_PORT", Value: fmt.Sprintf("%d", backup.Spec.DbPort)},
+									{Name: "DB_NAME", Value: backup.Spec.DbName},
+									{Name: "DB_SCHEMA", Value: backup.Spec.DbSchema},
+									{Name: "GCS_BUCKET", Value: backup.Spec.GcsBucket},
+									{
+										Name: "DB_PASSWORD",
+										ValueFrom: &corev1.EnvVarSource{
+											SecretKeyRef: &corev1.SecretKeySelector{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: backup.Spec.DbPasswordSecretName,
+												},
+												Key: backup.Spec.DbPasswordSecretKey,
+											},
+										},
+									},
+								},
+							},
+						},
+						RestartPolicy: corev1.RestartPolicyNever,
+					},
+				},
+			},
+		}
+		// Create the backup job
+		if err := r.Create(ctx, newJob); err != nil {
+			log.Error(err, "Failed to create backup job")
+			return ctrl.Result{}, err
+		}
+
+		// Update the CRD status
+		now := metav1.Now()
+		backup.Status.LastBackupTime = &now
+		location := fmt.Sprintf("gs://%s/backups/%s", backup.Spec.GcsBucket, backupFileName)
+		backup.Status.BackupLocation = &location
+		backup.Status.Status = "Running"
+		backup.Status.JobName = newJob.Name
+		log.Info("Updating BackupDatabaseSchema status123")
+		if err := r.Status().Update(ctx, backup); err != nil {
+			log.Error(err, "Failed to update BackupDatabaseSchema status")
+			return ctrl.Result{}, err
+		}
+	}
+	// Reconcile every 5 minutes
+	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

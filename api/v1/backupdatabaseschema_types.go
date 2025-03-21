@@ -20,22 +20,36 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+type BackupStatusType string
+
+const (
+	BackupStatusRunning BackupStatusType = "Running"
+	BackupStatusSuccess BackupStatusType = "Success"
+	BackupStatusFailed  BackupStatusType = "Failed"
+)
 
 // BackupDatabaseSchemaSpec defines the desired state of BackupDatabaseSchema.
 type BackupDatabaseSchemaSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// Foo is an example field of BackupDatabaseSchema. Edit backupdatabaseschema_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	DbHost                    string `json:"dbHost"`
+	DbUser                    string `json:"dbUser"`
+	DbPasswordSecretName      string `json:"dbPasswordSecretName"`
+	DbPasswordSecretNamespace string `json:"dbPasswordSecretNamespace"`
+	DbPasswordSecretKey       string `json:"dbPasswordSecretKey"`
+	DbName                    string `json:"dbName"`
+	DbSchema                  string `json:"dbSchema"`
+	DbPort                    int    `json:"dbPort"`
+	GcsBucket                 string `json:"gcsBucket"`
+	KubeServiceAccount        string `json:"kubeServiceAccount"`
+	GcpServiceAccount         string `json:"gcpServiceAccount"`
+	BackupJobNamespace        string `json:"backupJobNamespace"`
 }
 
 // BackupDatabaseSchemaStatus defines the observed state of BackupDatabaseSchema.
 type BackupDatabaseSchemaStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	LastBackupTime *metav1.Time     `json:"lastBackupTime,omitempty"`
+	BackupLocation *string          `json:"backupLocation,omitempty"`
+	Status         BackupStatusType `json:"status,omitempty"`
+	JobName        string           `json:"jobName,omitempty"`
 }
 
 // +kubebuilder:object:root=true
