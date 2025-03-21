@@ -21,10 +21,9 @@ node {
                 sh """
                     docker login -u ${DOCKER_USERNAME} -p ${DOCKER_TOKEN}
                 """
-                
-                // install make
+                //check make version
                 sh """
-                    apk add --no-cache make
+                    make --version
                 """
                 
                 // Build and push multi-platform image
