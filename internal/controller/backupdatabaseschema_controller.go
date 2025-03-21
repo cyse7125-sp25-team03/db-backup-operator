@@ -114,11 +114,16 @@ func (r *BackupDatabaseSchemaReconciler) Reconcile(ctx context.Context, req ctrl
 						Containers: []corev1.Container{
 							{
 								Name:  "pg-dump",
-								Image: "roarceus/postgres-gcloud:0.0.",
+								Image: "postgres:17.4",
 								Command: []string{
 									"sh", "-c",
 									`set -e
-																
+									apt-get update && apt-get install -y curl gnupg && \
+									curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add - && \
+									echo "deb http://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
+									apt-get update && apt-get install -y google-cloud-cli && \
+									rm -rf /var/lib/apt/lists/*			
+										
 									echo "checking gsutil version..."
 									gsutil --version
 
