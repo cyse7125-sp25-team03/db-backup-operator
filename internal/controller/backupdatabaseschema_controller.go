@@ -101,11 +101,14 @@ func (r *BackupDatabaseSchemaReconciler) Reconcile(ctx context.Context, req ctrl
 		timestamp := time.Now().UTC().Format("20060102-150405")
 		backupFileName := fmt.Sprintf("backup-%s.sql", timestamp)
 		log.Info("Creating new backup job")
+		finalizerName := "backup.csyeteam03.xyz/finalizer"
+
 		newJob := &batchv1.Job{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "backup-database-schema-job",
-				Namespace: backup.Spec.BackupJobNamespace,
-				Labels:    map[string]string{"backup-database": "true"},
+				Name:       "backup-database-schema-job",
+				Namespace:  backup.Spec.BackupJobNamespace,
+				Labels:     map[string]string{"backup-database": "true"},
+				Finalizers: []string{finalizerName},
 			},
 			Spec: batchv1.JobSpec{
 				Template: corev1.PodTemplateSpec{
@@ -123,7 +126,7 @@ func (r *BackupDatabaseSchemaReconciler) Reconcile(ctx context.Context, req ctrl
 									echo "deb http://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
 									apt-get update && apt-get install -y google-cloud-cli && \
 									rm -rf /var/lib/apt/lists/*			
-										
+
 									echo "checking gsutil version..."
 									gsutil --version
 
